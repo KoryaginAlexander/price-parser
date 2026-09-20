@@ -1,0 +1,10 @@
+{
+  "hotkey_capture": "F8",
+  "hotkey_edit_zones": "ctrl+F8",
+  "db_path": "%LOCALAPPDATA%/AlbionMarketScanner/data.db",
+  "tesseract_path": "C:/Program Files/Tesseract-OCR/tesseract.exe",
+  "price_thousands_separator": ",",
+  "report_output_dir": "./reports",
+  "pip_threshold_s": 60,
+  "pip_threshold_v": 60
+}

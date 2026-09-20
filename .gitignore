@@ -1,0 +1,19 @@
+# build artifacts (PyInstaller)
+build/
+dist/
+*.spec
+
+# personal, machine-specific zone calibration — not portable between monitors
+zones.json
+
+# python
+__pycache__/
+*.pyc
+
+# db (lives in %LOCALAPPDATA% anyway, but just in case)
+*.db
+
+# editors / OS
+.vscode/
+.idea/
+Thumbs.db

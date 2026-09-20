@@ -1,0 +1,7 @@
+PyQt6>=6.6
+mss>=9.0
+pytesseract>=0.3.10
+opencv-python>=4.9
+keyboard>=0.13.5
+openpyxl>=3.1
+pyinstaller>=6.5
