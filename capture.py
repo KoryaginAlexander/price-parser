@@ -1,4 +1,5 @@
 """Screenshot capture + OCR + pip-based enchant detection (ТЗ §6-8)."""
+import os
 import re
 
 import cv2
@@ -9,6 +10,9 @@ from PIL import Image
 
 import storage
 from config_io import load_aliases, load_config, load_zones, zones_configured
+from paths import path_in_base
+
+DEBUG_DIR = path_in_base("debug")
 
 ALIAS_RE = re.compile(r"\(([^)]+)\)")
 
@@ -82,28 +86,84 @@ def parse_price(raw: str, thousands_sep: str):
     return value
 
 
+def detect_enchant_debug(img_bgr: np.ndarray, s_threshold: float, v_threshold: float,
+                          max_pips: int = 4):
+    """The item_enchant zone is the row of up to `max_pips` diamond pips
+    under the item icon (ТЗ §7, Variant B): filled pips are a saturated
+    color (green/purple/etc.), empty ones are dark grey.
+
+    Rather than slicing the zone into `max_pips` fixed-width columns (which
+    breaks if the marked zone isn't pixel-perfect), this scans every pixel
+    for the "filled" color (S/V above threshold) and groups matching
+    pixels into connected blobs — one blob per actual pip, wherever it
+    sits. The pip count is the number of blobs big enough to be a real pip
+    (not anti-aliasing noise), left-to-right.
+
+    Returns (level, blobs) where blobs is a list of {h, s, v, area, cx}
+    for every accepted blob — used to calibrate pip_threshold_s/v from a
+    real capture instead of guessing."""
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    s_channel = hsv[:, :, 1]
+    v_channel = hsv[:, :, 2]
+    mask = ((s_channel >= s_threshold) & (v_channel >= v_threshold)).astype(np.uint8) * 255
+
+    total_area = img_bgr.shape[0] * img_bgr.shape[1]
+    min_blob_area = max(2, total_area // (max_pips * 20))
+
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
+
+    blobs = []
+    for label in range(1, num_labels):  # label 0 is background
+        area = int(stats[label, cv2.CC_STAT_AREA])
+        if area < min_blob_area:
+            continue
+        blob_mask = labels == label
+        h_mean = float(hsv[:, :, 0][blob_mask].mean())
+        s_mean = float(s_channel[blob_mask].mean())
+        v_mean = float(v_channel[blob_mask].mean())
+        cx = float(centroids[label][0])
+        blobs.append({"h": h_mean, "s": s_mean, "v": v_mean, "area": area, "cx": cx})
+
+    blobs.sort(key=lambda b: b["cx"])
+    level = min(len(blobs), max_pips)
+    return level, blobs
+
+
 def detect_enchant(img_bgr: np.ndarray, s_threshold: float, v_threshold: float,
                     max_pips: int = 4):
-    """The item_enchant zone is the row of 4 diamond pips under the item
-    icon (ТЗ §7, Variant B). It's split into `max_pips` equal horizontal
-    slots (pip positions are static); a slot counts as filled when it's
-    brighter/more saturated than an empty (dark grey) pip. Pips fill
-    left-to-right, so counting stops at the first empty slot."""
-    h, w = img_bgr.shape[:2]
-    slot_w = w / max_pips
-    filled = 0
-    for i in range(max_pips):
-        cx = min(int(slot_w * (i + 0.5)), w - 1)
-        x0, x1 = max(cx - 2, 0), min(cx + 3, w)
-        sample = img_bgr[:, x0:x1]
-        if sample.size == 0:
-            continue
-        hsv = cv2.cvtColor(sample, cv2.COLOR_BGR2HSV)
-        if hsv[:, :, 1].mean() >= s_threshold and hsv[:, :, 2].mean() >= v_threshold:
-            filled += 1
+    level, _ = detect_enchant_debug(img_bgr, s_threshold, v_threshold, max_pips)
+    return level
+
+
+def save_enchant_debug(img_bgr: np.ndarray, blobs: list, level: int) -> None:
+    """Dump the exact captured item_enchant zone + found-pip HSV readings
+    to disk (overwriting the previous ones) so they can be shared to tune
+    pip_threshold_s/v against a real, live capture."""
+    try:
+        os.makedirs(DEBUG_DIR, exist_ok=True)
+        upscale = 8
+        big = cv2.resize(img_bgr, None, fx=upscale, fy=upscale, interpolation=cv2.INTER_NEAREST)
+        # cv2.imwrite silently fails on Windows paths containing non-ASCII
+        # characters (e.g. Cyrillic folder names) — encode in memory and
+        # write with plain Python I/O instead, which handles Unicode paths.
+        ok, buf = cv2.imencode(".png", big)
+        if ok:
+            with open(os.path.join(DEBUG_DIR, "last_enchant.png"), "wb") as f:
+                f.write(buf.tobytes())
+
+        lines = [f"detected level (найдено закрашенных пипсов): {level}", ""]
+        if blobs:
+            for i, blob in enumerate(blobs):
+                lines.append(
+                    f"пипс {i}: H={blob['h']:.1f} S={blob['s']:.1f} V={blob['v']:.1f} "
+                    f"площадь={blob['area']}px"
+                )
         else:
-            break
-    return filled
+            lines.append("закрашенных пипсов не найдено (все ниже порога)")
+        with open(os.path.join(DEBUG_DIR, "last_enchant.txt"), "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+    except Exception:
+        pass  # debug dump must never break a real capture
 
 
 def do_capture(item_class: str) -> dict:
@@ -133,11 +193,12 @@ def do_capture(item_class: str) -> dict:
 
     tier = resolve_tier(alias, aliases)
     price = parse_price(raw_price, config["price_thousands_separator"])
-    enchant = detect_enchant(
+    enchant, enchant_blobs = detect_enchant_debug(
         enchant_img,
         config.get("pip_threshold_s", 60),
         config.get("pip_threshold_v", 60),
     )
+    save_enchant_debug(enchant_img, enchant_blobs, enchant)
     needs_review = tier is None or price is None
 
     db_path = storage.resolve_db_path(config["db_path"])
@@ -158,6 +219,7 @@ def do_capture(item_class: str) -> dict:
         "alias": alias,
         "tier": tier,
         "enchant": enchant,
+        "enchant_blobs": enchant_blobs,
         "price": price,
         "needs_review": needs_review,
     }

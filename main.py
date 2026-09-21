@@ -178,9 +178,15 @@ class MainWindow(QMainWindow):
 
         review_note = " (требует проверки)" if result["needs_review"] else ""
         tier = result["tier"] if result["tier"] is not None else "?"
+        blobs = result.get("enchant_blobs", [])
+        blobs_note = (
+            " | ".join(f"S{b['s']:.0f}/V{b['v']:.0f}" for b in blobs)
+            if blobs else "не найдено"
+        )
         self.last_result_label.setText(
             f"{result['item_name']} | тир {tier} | зач. {result['enchant']} "
-            f"| цена {result['price']}{review_note}"
+            f"| цена {result['price']}{review_note}\n"
+            f"найденные пипсы: {blobs_note}"
         )
 
     def _play_gunshot(self):
