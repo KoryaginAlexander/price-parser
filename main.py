@@ -135,8 +135,11 @@ class MainWindow(QMainWindow):
             self.manual_enchant_label.hide()
 
     def on_manual_enchant_selected(self, level: int):
+        """F1-F4 in manual mode: set the level AND capture immediately —
+        pressing F8 afterwards isn't needed."""
         self.manual_enchant_level = level
         self._update_manual_enchant_label()
+        self._perform_capture()
 
     def refresh_zones_status(self):
         if zones_configured(load_zones(), self.config.get("enchant_detection_method", "color")):
@@ -189,6 +192,9 @@ class MainWindow(QMainWindow):
         self.refresh_zones_status()
 
     def on_capture_hotkey(self):
+        self._perform_capture()
+
+    def _perform_capture(self):
         if not zones_configured(load_zones(), self.config.get("enchant_detection_method", "color")):
             return
         if not self.selected_class:
