@@ -27,11 +27,15 @@ CLASS_MAP = {
 }
 
 
+MANUAL_ENCHANT_HOTKEYS = {"F1": 0, "F2": 1, "F3": 2, "F4": 3}
+
+
 class HotkeyBridge(QObject):
     """`keyboard` fires hotkey callbacks on its own hook thread; signals
     marshal them back onto the Qt main thread safely."""
     capture_triggered = pyqtSignal()
     edit_zones_triggered = pyqtSignal()
+    manual_enchant_selected = pyqtSignal(int)
 
 
 class MainWindow(QMainWindow):
@@ -42,10 +46,12 @@ class MainWindow(QMainWindow):
 
         self.config = load_config()
         self.selected_class = None
+        self.manual_enchant_level = 0
 
         self.bridge = HotkeyBridge()
         self.bridge.capture_triggered.connect(self.on_capture_hotkey)
         self.bridge.edit_zones_triggered.connect(self.on_edit_zones_hotkey)
+        self.bridge.manual_enchant_selected.connect(self.on_manual_enchant_selected)
 
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -66,6 +72,10 @@ class MainWindow(QMainWindow):
 
         self.class_status_label = QLabel("Класс не выбран")
         layout.addWidget(self.class_status_label)
+
+        self.manual_enchant_label = QLabel()
+        layout.addWidget(self.manual_enchant_label)
+        self._update_manual_enchant_label()
 
         edit_zones_btn = QPushButton("Редактировать зоны")
         edit_zones_btn.clicked.connect(self.on_edit_zones_clicked)
@@ -97,7 +107,7 @@ class MainWindow(QMainWindow):
         self.refresh_zones_status()
         self.register_hotkeys()
 
-        if not zones_configured(load_zones()):
+        if not zones_configured(load_zones(), self.config.get("enchant_detection_method", "color")):
             self.zones_status_label.setText("Зоны не настроены — откройте редактор зон")
             self.open_zone_editor_dialog()
 
@@ -106,13 +116,30 @@ class MainWindow(QMainWindow):
         self.class_status_label.setText(f"Класс: {CLASS_MAP[key]}")
 
     def _update_hotkey_hint(self):
-        self.hotkey_hint_label.setText(
+        hint = (
             f"Захват: {self.config['hotkey_capture']}    "
             f"Редактор зон: {self.config['hotkey_edit_zones']}"
         )
+        if self._manual_mode():
+            hint += "    Зачарование: F1-F4"
+        self.hotkey_hint_label.setText(hint)
+
+    def _manual_mode(self) -> bool:
+        return self.config.get("enchant_detection_method") == "manual"
+
+    def _update_manual_enchant_label(self):
+        if self._manual_mode():
+            self.manual_enchant_label.setText(f"Зачарование (F1-F4): {self.manual_enchant_level}")
+            self.manual_enchant_label.show()
+        else:
+            self.manual_enchant_label.hide()
+
+    def on_manual_enchant_selected(self, level: int):
+        self.manual_enchant_level = level
+        self._update_manual_enchant_label()
 
     def refresh_zones_status(self):
-        if zones_configured(load_zones()):
+        if zones_configured(load_zones(), self.config.get("enchant_detection_method", "color")):
             self.zones_status_label.setText("Зоны настроены ✓")
         else:
             self.zones_status_label.setText("Зоны НЕ настроены ✗")
@@ -124,6 +151,11 @@ class MainWindow(QMainWindow):
             pass
         keyboard.add_hotkey(self.config["hotkey_capture"], self.bridge.capture_triggered.emit)
         keyboard.add_hotkey(self.config["hotkey_edit_zones"], self.bridge.edit_zones_triggered.emit)
+        if self._manual_mode():
+            for hotkey, level in MANUAL_ENCHANT_HOTKEYS.items():
+                keyboard.add_hotkey(
+                    hotkey, lambda lvl=level: self.bridge.manual_enchant_selected.emit(lvl)
+                )
 
     def on_edit_db_clicked(self):
         open_db_editor(self)
@@ -137,6 +169,8 @@ class MainWindow(QMainWindow):
         if changed:
             self.config = load_config()
             self._update_hotkey_hint()
+            self._update_manual_enchant_label()
+            self.refresh_zones_status()
         self.register_hotkeys()
 
     def on_edit_zones_clicked(self):
@@ -155,7 +189,7 @@ class MainWindow(QMainWindow):
         self.refresh_zones_status()
 
     def on_capture_hotkey(self):
-        if not zones_configured(load_zones()):
+        if not zones_configured(load_zones(), self.config.get("enchant_detection_method", "color")):
             return
         if not self.selected_class:
             self._beep_error()
@@ -165,7 +199,7 @@ class MainWindow(QMainWindow):
         self._play_gunshot()
 
         try:
-            result = capture.do_capture(self.selected_class)
+            result = capture.do_capture(self.selected_class, self.manual_enchant_level)
         except Exception as exc:
             self._beep_error()
             self.last_result_label.setText(f"Ошибка захвата: {exc}")
@@ -179,11 +213,14 @@ class MainWindow(QMainWindow):
         review_note = " (требует проверки)" if result["needs_review"] else ""
         tier = result["tier"] if result["tier"] is not None else "?"
         dbg = result.get("enchant_debug") or {}
-        color_note = f"H{dbg.get('h', 0):.0f}/S{dbg.get('s', 0):.0f}/V{dbg.get('v', 0):.0f}"
+        if dbg.get("method") == "manual":
+            extra_note = "зачарование задано вручную (F1-F4)"
+        else:
+            extra_note = f"цвет зоны зачарования: H{dbg.get('h', 0):.0f}/S{dbg.get('s', 0):.0f}/V{dbg.get('v', 0):.0f}"
         self.last_result_label.setText(
             f"{result['item_name']} | тир {tier} | зач. {result['enchant']} "
             f"| цена {result['price']}{review_note}\n"
-            f"цвет зоны зачарования: {color_note}"
+            f"{extra_note}"
         )
 
     def _play_gunshot(self):

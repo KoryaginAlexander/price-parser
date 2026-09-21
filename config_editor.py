@@ -8,7 +8,7 @@ import sys
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QApplication, QDialog, QFileDialog, QFormLayout, QHBoxLayout,
+    QApplication, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout,
     QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QTabWidget,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
@@ -19,6 +19,10 @@ from config_io import (
 )
 
 ENCHANT_LEVELS = ["0", "1", "2", "3", "4"]
+ENCHANT_METHODS = [
+    ("color", "По цвету зоны (автоматически)"),
+    ("manual", "Вручную (F1=0, F2=1, F3=2, F4=3, без зоны)"),
+]
 
 
 class GeneralTab(QWidget):
@@ -57,6 +61,13 @@ class GeneralTab(QWidget):
         report_row.addWidget(report_browse)
         form.addRow("Папка отчётов:", report_row)
 
+        self.enchant_method = QComboBox()
+        for value, label in ENCHANT_METHODS:
+            self.enchant_method.addItem(label, value)
+        idx = self.enchant_method.findData(config.get("enchant_detection_method", "color"))
+        self.enchant_method.setCurrentIndex(max(idx, 0))
+        form.addRow("Метод определения зачарования:", self.enchant_method)
+
     def _browse_tesseract(self):
         path, _ = QFileDialog.getOpenFileName(self, "Выберите tesseract.exe", "", "Executable (*.exe)")
         if path:
@@ -75,6 +86,7 @@ class GeneralTab(QWidget):
             "tesseract_path": self.tesseract_path.text().strip(),
             "price_thousands_separator": self.price_sep.text() or ",",
             "report_output_dir": self.report_dir.text().strip() or "./reports",
+            "enchant_detection_method": self.enchant_method.currentData(),
         }
 
 

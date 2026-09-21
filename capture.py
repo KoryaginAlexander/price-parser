@@ -159,23 +159,29 @@ def save_enchant_debug(img_bgr: np.ndarray, debug: dict, level) -> None:
         pass  # debug dump must never break a real capture
 
 
-def do_capture(item_class: str) -> dict:
+def do_capture(item_class: str, manual_enchant_level: int = None) -> dict:
     """One F8 capture cycle (ТЗ §8). Returns a result dict; never raises
     for expected failure modes (missing zones/class), only for hard
-    errors (e.g. tesseract not installed), which the caller should catch."""
+    errors (e.g. tesseract not installed), which the caller should catch.
+
+    manual_enchant_level: the level last selected via F1-F4 in the main
+    window, used instead of the color zone when enchant_detection_method
+    is "manual" (ignored otherwise)."""
+    config = load_config()
+    method = config.get("enchant_detection_method", "color")
+
     zones = load_zones()
-    if not zones_configured(zones):
+    if not zones_configured(zones, method):
         return {"ok": False, "reason": "zones_not_configured"}
     if not item_class:
         return {"ok": False, "reason": "class_not_selected"}
 
-    config = load_config()
     aliases = load_aliases()
 
     with mss.mss() as sct:
         name_img = grab_zone(sct, zones["item_name"])
         price_img = grab_zone(sct, zones["sell_price"])
-        enchant_img = grab_zone(sct, zones["item_enchant"])
+        enchant_img = None if method == "manual" else grab_zone(sct, zones["item_enchant"])
 
     raw_name = ocr_item_name(name_img, config["tesseract_path"])
     raw_price = ocr_price(price_img, config["tesseract_path"])
@@ -186,9 +192,14 @@ def do_capture(item_class: str) -> dict:
 
     tier = resolve_tier(alias, aliases)
     price = parse_price(raw_price, config["price_thousands_separator"])
-    enchant_colors = load_enchant_colors()
-    enchant, enchant_debug = detect_enchant_debug(enchant_img, enchant_colors)
-    save_enchant_debug(enchant_img, enchant_debug, enchant)
+
+    if method == "manual":
+        enchant = manual_enchant_level if manual_enchant_level is not None else 0
+        enchant_debug = {"method": "manual"}
+    else:
+        enchant_colors = load_enchant_colors()
+        enchant, enchant_debug = detect_enchant_debug(enchant_img, enchant_colors)
+        save_enchant_debug(enchant_img, enchant_debug, enchant)
     needs_review = tier is None or price is None
 
     db_path = storage.resolve_db_path(config["db_path"])

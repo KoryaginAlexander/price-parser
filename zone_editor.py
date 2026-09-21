@@ -10,16 +10,23 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from config_io import load_zones, save_zones
+from config_io import load_config, load_zones, save_zones
 
-ZONE_DEFS = [
-    ("item_name", "Название предмета",
-     "Выделите название предмета целиком, включая alias в скобках"),
-    ("item_enchant", "Индикатор зачарования",
-     "Выделите небольшую область на цветном индикаторе/рамке зачарования"),
-    ("sell_price", "Цена продажи",
-     "Выделите цену первой строки в «Заказы на продажу»"),
-]
+ITEM_NAME_ZONE = ("item_name", "Название предмета",
+                   "Выделите название предмета целиком, включая alias в скобках")
+ITEM_ENCHANT_ZONE = ("item_enchant", "Индикатор зачарования",
+                      "Выделите сплошную цветную полосу под ромбиками-пипсами (не сами ромбики)")
+SELL_PRICE_ZONE = ("sell_price", "Цена продажи",
+                    "Выделите цену первой строки в «Заказы на продажу»")
+
+
+def get_zone_defs():
+    """item_enchant isn't needed in "manual" mode (F1-F4 instead of a
+    color zone) — see config's enchant_detection_method."""
+    config = load_config()
+    if config.get("enchant_detection_method") == "manual":
+        return [ITEM_NAME_ZONE, SELL_PRICE_ZONE]
+    return [ITEM_NAME_ZONE, ITEM_ENCHANT_ZONE, SELL_PRICE_ZONE]
 
 
 def _physical_monitors():
@@ -122,12 +129,13 @@ class ZoneEditorDialog(QDialog):
         self.setWindowTitle("Редактирование зон захвата")
         self.setMinimumWidth(420)
         self.zones = load_zones() or {}
+        self.zone_defs = get_zone_defs()
         self._overlay = None  # keep a reference so it isn't garbage-collected mid-drag
 
         layout = QVBoxLayout(self)
         self.row_labels = {}
 
-        for key, title, hint in ZONE_DEFS:
+        for key, title, hint in self.zone_defs:
             row = QHBoxLayout()
             name_label = QLabel(title)
             name_label.setMinimumWidth(190)
@@ -172,7 +180,7 @@ class ZoneEditorDialog(QDialog):
         self._update_save_enabled()
 
     def _update_save_enabled(self):
-        required = ("item_name", "item_enchant", "sell_price")
+        required = [key for key, _, _ in self.zone_defs]
         self.save_btn.setEnabled(all(k in self.zones for k in required))
 
     def _save(self):

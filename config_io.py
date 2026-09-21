@@ -21,6 +21,10 @@ DEFAULT_CONFIG = {
     "tesseract_path": "C:/Program Files/Tesseract-OCR/tesseract.exe",
     "price_thousands_separator": ",",
     "report_output_dir": "./reports",
+    # "color": sample the item_enchant zone and match against
+    # enchant_colors.json. "manual": no zone needed — the user presses
+    # F1-F4 to say what enchant level the current item is.
+    "enchant_detection_method": "color",
 }
 
 DEFAULT_ALIASES = {
@@ -97,8 +101,10 @@ def save_zones(zones: dict) -> None:
     _save_json(ZONES_FILE, zones)
 
 
-def zones_configured(zones) -> bool:
+def zones_configured(zones, enchant_method: str = "color") -> bool:
     if not zones:
         return False
-    required = ("item_name", "item_enchant", "sell_price")
+    required = ["item_name", "sell_price"]
+    if enchant_method != "manual":
+        required.append("item_enchant")
     return all(k in zones and zones[k] for k in required)
