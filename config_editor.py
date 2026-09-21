@@ -9,11 +9,16 @@ import sys
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QApplication, QDialog, QFileDialog, QFormLayout, QHBoxLayout,
-    QLineEdit, QMessageBox, QPushButton, QSpinBox, QTabWidget,
+    QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QTabWidget,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from config_io import load_aliases, load_config, save_aliases, save_config
+from config_io import (
+    load_aliases, load_config, load_enchant_colors, save_aliases,
+    save_config, save_enchant_colors,
+)
+
+ENCHANT_LEVELS = ["0", "1", "2", "3", "4"]
 
 
 class GeneralTab(QWidget):
@@ -52,16 +57,6 @@ class GeneralTab(QWidget):
         report_row.addWidget(report_browse)
         form.addRow("Папка отчётов:", report_row)
 
-        self.pip_threshold_s = QSpinBox()
-        self.pip_threshold_s.setRange(0, 255)
-        self.pip_threshold_s.setValue(int(config["pip_threshold_s"]))
-        form.addRow("Порог насыщенности пипса (S):", self.pip_threshold_s)
-
-        self.pip_threshold_v = QSpinBox()
-        self.pip_threshold_v.setRange(0, 255)
-        self.pip_threshold_v.setValue(int(config["pip_threshold_v"]))
-        form.addRow("Порог яркости пипса (V):", self.pip_threshold_v)
-
     def _browse_tesseract(self):
         path, _ = QFileDialog.getOpenFileName(self, "Выберите tesseract.exe", "", "Executable (*.exe)")
         if path:
@@ -80,8 +75,6 @@ class GeneralTab(QWidget):
             "tesseract_path": self.tesseract_path.text().strip(),
             "price_thousands_separator": self.price_sep.text() or ",",
             "report_output_dir": self.report_dir.text().strip() or "./reports",
-            "pip_threshold_s": self.pip_threshold_s.value(),
-            "pip_threshold_v": self.pip_threshold_v.value(),
         }
 
 
@@ -137,19 +130,59 @@ class AliasesTab(QWidget):
         return result
 
 
+class EnchantColorsTab(QWidget):
+    """Reference HSV color per enchant level, sampled from the solid color
+    bar under the item icon. Calibrated from real captures — see
+    detect_enchant_debug() in capture.py for how these are matched."""
+
+    def __init__(self, colors: dict):
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(
+            "Эталонные HSV-цвета полосы зачарования (H: 0-179, S/V: 0-255).\n"
+            "Меняйте, только если распознавание реально ошибается — "
+            "текущие значения сняты с живых скриншотов."
+        ))
+
+        self.table = QTableWidget(len(ENCHANT_LEVELS), 4)
+        self.table.setHorizontalHeaderLabels(["Уровень", "H", "S", "V"])
+        for row, level in enumerate(ENCHANT_LEVELS):
+            level_item = QTableWidgetItem(level)
+            level_item.setFlags(level_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.table.setItem(row, 0, level_item)
+            ref = colors.get(level, {"h": 0, "s": 0, "v": 0})
+            for col, key, max_val in ((1, "h", 179), (2, "s", 255), (3, "v", 255)):
+                spin = QSpinBox()
+                spin.setRange(0, max_val)
+                spin.setValue(int(round(ref.get(key, 0))))
+                self.table.setCellWidget(row, col, spin)
+        layout.addWidget(self.table)
+
+    def collect(self) -> dict:
+        result = {}
+        for row, level in enumerate(ENCHANT_LEVELS):
+            h_spin = self.table.cellWidget(row, 1)
+            s_spin = self.table.cellWidget(row, 2)
+            v_spin = self.table.cellWidget(row, 3)
+            result[level] = {"h": h_spin.value(), "s": s_spin.value(), "v": v_spin.value()}
+        return result
+
+
 class ConfigEditorDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Настройки")
-        self.resize(640, 400)
+        self.resize(640, 460)
         self.changed = False
 
         layout = QVBoxLayout(self)
         tabs = QTabWidget()
         self.general_tab = GeneralTab(load_config())
         self.aliases_tab = AliasesTab(load_aliases())
+        self.enchant_tab = EnchantColorsTab(load_enchant_colors())
         tabs.addTab(self.general_tab, "Основные")
         tabs.addTab(self.aliases_tab, "Алиасы → тиры")
+        tabs.addTab(self.enchant_tab, "Цвета зачарования")
         layout.addWidget(tabs)
 
         btn_row = QHBoxLayout()
@@ -165,6 +198,7 @@ class ConfigEditorDialog(QDialog):
     def _save(self):
         save_config(self.general_tab.collect())
         save_aliases(self.aliases_tab.collect())
+        save_enchant_colors(self.enchant_tab.collect())
         self.changed = True
         QMessageBox.information(self, "Готово", "Настройки сохранены и применяются сразу — перезапуск не нужен.")
         self.accept()

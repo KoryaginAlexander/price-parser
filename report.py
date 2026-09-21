@@ -56,7 +56,10 @@ def build_sheet(ws, rows: list) -> None:
         price_lookup[key] = r["price"]
         review_lookup[key] = r["needs_review"]
 
-    items = sorted({r["item_name"] for r in rows if r["tier"] in FIXED_TIERS})
+    items = sorted({
+        r["item_name"] for r in rows
+        if r["tier"] in FIXED_TIERS and r["enchant"] in FIXED_ENCHANTS
+    })
 
     combo_to_col = {}
     tier_col_span = {}
@@ -114,16 +117,17 @@ def build_sheet(ws, rows: list) -> None:
         ws.column_dimensions[get_column_letter(c)].width = 10
 
     # Captures that don't fit the fixed template (unresolved alias -> tier
-    # outside 4-8) aren't dropped silently; list them below the matrix.
+    # outside 4-8, or an enchant level outside 0-3) aren't dropped
+    # silently; list them below the matrix.
     leftover = sorted(
-        (r for r in rows if r["tier"] not in FIXED_TIERS),
+        (r for r in rows if r["tier"] not in FIXED_TIERS or r["enchant"] not in FIXED_ENCHANTS),
         key=lambda r: r["item_name"],
     )
     if leftover:
         start_row = 3 + len(items)
         note_cell = ws.cell(
             row=start_row, column=1,
-            value="Требует проверки (тир не определён или вне диапазона 4-8)",
+            value="Требует проверки (тир вне 4-8 или зачарование вне 0-3)",
         )
         note_cell.font = HEADER_FONT
         for j, title in enumerate(["Предмет", "Тир", "Зачарование", "Цена"]):

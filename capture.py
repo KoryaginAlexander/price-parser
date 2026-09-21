@@ -1,4 +1,4 @@
-"""Screenshot capture + OCR + pip-based enchant detection (ТЗ §6-8)."""
+"""Screenshot capture + OCR + color-based enchant detection (ТЗ §6-8)."""
 import os
 import re
 
@@ -9,7 +9,7 @@ import pytesseract
 from PIL import Image
 
 import storage
-from config_io import load_aliases, load_config, load_zones, zones_configured
+from config_io import load_aliases, load_config, load_enchant_colors, load_zones, zones_configured
 from paths import path_in_base
 
 DEBUG_DIR = path_in_base("debug")
@@ -86,59 +86,56 @@ def parse_price(raw: str, thousands_sep: str):
     return value
 
 
-def detect_enchant_debug(img_bgr: np.ndarray, s_threshold: float, v_threshold: float,
-                          max_pips: int = 4):
-    """The item_enchant zone is the row of up to `max_pips` diamond pips
-    under the item icon (ТЗ §7, Variant B): filled pips are a saturated
-    color (green/purple/etc.), empty ones are dark grey.
-
-    Rather than slicing the zone into `max_pips` fixed-width columns (which
-    breaks if the marked zone isn't pixel-perfect), this scans every pixel
-    for the "filled" color (S/V above threshold) and groups matching
-    pixels into connected blobs — one blob per actual pip, wherever it
-    sits. The pip count is the number of blobs big enough to be a real pip
-    (not anti-aliasing noise), left-to-right.
-
-    Returns (level, blobs) where blobs is a list of {h, s, v, area, cx}
-    for every accepted blob — used to calibrate pip_threshold_s/v from a
-    real capture instead of guessing."""
+def dominant_hsv(img_bgr: np.ndarray, bin_size: int = 4):
+    """Mean HSV over the most common hue bucket in the image, rather than
+    a flat mean over all pixels. The enchant color bar isn't perfectly flat
+    (bevel/shading), so a plain per-pixel mean lands between the two real
+    shades; bucketing hue and keeping only the largest cluster reflects the
+    bar's actual color instead."""
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
-    s_channel = hsv[:, :, 1]
-    v_channel = hsv[:, :, 2]
-    mask = ((s_channel >= s_threshold) & (v_channel >= v_threshold)).astype(np.uint8) * 255
+    h, s, v = hsv[:, :, 0].flatten(), hsv[:, :, 1].flatten(), hsv[:, :, 2].flatten()
+    bins = (h // bin_size).astype(int)
+    vals, counts = np.unique(bins, return_counts=True)
+    dominant_bin = vals[np.argmax(counts)]
+    mask = bins == dominant_bin
+    return float(h[mask].mean()), float(s[mask].mean()), float(v[mask].mean())
 
-    total_area = img_bgr.shape[0] * img_bgr.shape[1]
-    min_blob_area = max(2, total_area // (max_pips * 20))
 
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
+def detect_enchant_debug(img_bgr: np.ndarray, enchant_colors: dict):
+    """The item_enchant zone is a solid color bar under the item icon
+    whose color encodes the enchant level (calibrated from real captures,
+    not a guess — see enchant_colors.json). The zone's dominant color is
+    matched to the nearest reference color in HSV space.
 
-    blobs = []
-    for label in range(1, num_labels):  # label 0 is background
-        area = int(stats[label, cv2.CC_STAT_AREA])
-        if area < min_blob_area:
+    Returns (level, debug) where debug carries the sampled color and the
+    distance to the chosen reference, for calibration/troubleshooting."""
+    h, s, v = dominant_hsv(img_bgr)
+    best_level, best_dist = None, None
+    for level_str, ref in enchant_colors.items():
+        try:
+            level = int(level_str)
+        except ValueError:
             continue
-        blob_mask = labels == label
-        h_mean = float(hsv[:, :, 0][blob_mask].mean())
-        s_mean = float(s_channel[blob_mask].mean())
-        v_mean = float(v_channel[blob_mask].mean())
-        cx = float(centroids[label][0])
-        blobs.append({"h": h_mean, "s": s_mean, "v": v_mean, "area": area, "cx": cx})
+        dh = min(abs(h - ref["h"]), 180 - abs(h - ref["h"]))
+        ds = s - ref.get("s", 0)
+        dv = v - ref.get("v", 0)
+        dist = (dh ** 2 + ds ** 2 + dv ** 2) ** 0.5
+        if best_dist is None or dist < best_dist:
+            best_dist = dist
+            best_level = level
+    debug = {"h": h, "s": s, "v": v, "matched_level": best_level, "distance": best_dist}
+    return best_level, debug
 
-    blobs.sort(key=lambda b: b["cx"])
-    level = min(len(blobs), max_pips)
-    return level, blobs
 
-
-def detect_enchant(img_bgr: np.ndarray, s_threshold: float, v_threshold: float,
-                    max_pips: int = 4):
-    level, _ = detect_enchant_debug(img_bgr, s_threshold, v_threshold, max_pips)
+def detect_enchant(img_bgr: np.ndarray, enchant_colors: dict):
+    level, _ = detect_enchant_debug(img_bgr, enchant_colors)
     return level
 
 
-def save_enchant_debug(img_bgr: np.ndarray, blobs: list, level: int) -> None:
-    """Dump the exact captured item_enchant zone + found-pip HSV readings
-    to disk (overwriting the previous ones) so they can be shared to tune
-    pip_threshold_s/v against a real, live capture."""
+def save_enchant_debug(img_bgr: np.ndarray, debug: dict, level) -> None:
+    """Dump the exact captured item_enchant zone + the sampled color to
+    disk (overwriting the previous ones) so they can be shared to tune
+    enchant_colors.json against a real, live capture."""
     try:
         os.makedirs(DEBUG_DIR, exist_ok=True)
         upscale = 8
@@ -151,15 +148,11 @@ def save_enchant_debug(img_bgr: np.ndarray, blobs: list, level: int) -> None:
             with open(os.path.join(DEBUG_DIR, "last_enchant.png"), "wb") as f:
                 f.write(buf.tobytes())
 
-        lines = [f"detected level (найдено закрашенных пипсов): {level}", ""]
-        if blobs:
-            for i, blob in enumerate(blobs):
-                lines.append(
-                    f"пипс {i}: H={blob['h']:.1f} S={blob['s']:.1f} V={blob['v']:.1f} "
-                    f"площадь={blob['area']}px"
-                )
-        else:
-            lines.append("закрашенных пипсов не найдено (все ниже порога)")
+        lines = [
+            f"detected level: {level}",
+            f"sampled color: H={debug['h']:.1f} S={debug['s']:.1f} V={debug['v']:.1f}",
+            f"distance to matched reference: {debug['distance']:.1f}",
+        ]
         with open(os.path.join(DEBUG_DIR, "last_enchant.txt"), "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
     except Exception:
@@ -193,12 +186,9 @@ def do_capture(item_class: str) -> dict:
 
     tier = resolve_tier(alias, aliases)
     price = parse_price(raw_price, config["price_thousands_separator"])
-    enchant, enchant_blobs = detect_enchant_debug(
-        enchant_img,
-        config.get("pip_threshold_s", 60),
-        config.get("pip_threshold_v", 60),
-    )
-    save_enchant_debug(enchant_img, enchant_blobs, enchant)
+    enchant_colors = load_enchant_colors()
+    enchant, enchant_debug = detect_enchant_debug(enchant_img, enchant_colors)
+    save_enchant_debug(enchant_img, enchant_debug, enchant)
     needs_review = tier is None or price is None
 
     db_path = storage.resolve_db_path(config["db_path"])
@@ -219,7 +209,7 @@ def do_capture(item_class: str) -> dict:
         "alias": alias,
         "tier": tier,
         "enchant": enchant,
-        "enchant_blobs": enchant_blobs,
+        "enchant_debug": enchant_debug,
         "price": price,
         "needs_review": needs_review,
     }
