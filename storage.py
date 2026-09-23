@@ -71,8 +71,8 @@ def fetch_by_class(db_path: str, item_class: str):
     with get_connection(db_path) as conn:
         conn.row_factory = sqlite3.Row
         cur = conn.execute(
-            "SELECT item_name, tier, enchant, price, needs_review "
-            "FROM items WHERE class = ? ORDER BY item_name",
+            "SELECT item_name, tier, enchant, price, needs_review, updated_at "
+            "FROM items WHERE class = ? ORDER BY updated_at DESC",
             (item_class,),
         )
         return [dict(row) for row in cur.fetchall()]

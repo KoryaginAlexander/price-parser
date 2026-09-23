@@ -51,15 +51,24 @@ ITEM_HEADER_FILL = _fill("D9D9D9")  # серый, как и зачаровани
 def build_sheet(ws, rows: list) -> None:
     price_lookup = {}
     review_lookup = {}
+    latest_update = {}
     for r in rows:
         key = (r["item_name"], r["tier"], r["enchant"])
         price_lookup[key] = r["price"]
         review_lookup[key] = r["needs_review"]
+        ts = r.get("updated_at") or ""
+        if ts > latest_update.get(r["item_name"], ""):
+            latest_update[r["item_name"]] = ts
 
-    items = sorted({
-        r["item_name"] for r in rows
-        if r["tier"] in FIXED_TIERS and r["enchant"] in FIXED_ENCHANTS
-    })
+    # Most recently captured/updated items first, not alphabetical.
+    items = sorted(
+        {
+            r["item_name"] for r in rows
+            if r["tier"] in FIXED_TIERS and r["enchant"] in FIXED_ENCHANTS
+        },
+        key=lambda name: latest_update.get(name, ""),
+        reverse=True,
+    )
 
     combo_to_col = {}
     tier_col_span = {}
@@ -121,7 +130,8 @@ def build_sheet(ws, rows: list) -> None:
     # silently; list them below the matrix.
     leftover = sorted(
         (r for r in rows if r["tier"] not in FIXED_TIERS or r["enchant"] not in FIXED_ENCHANTS),
-        key=lambda r: r["item_name"],
+        key=lambda r: r.get("updated_at") or "",
+        reverse=True,
     )
     if leftover:
         start_row = 3 + len(items)
